@@ -33,26 +33,27 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# 自定义CSS
+# 自定义CSS (白色主题)
 st.markdown("""
 <style>
     .metric-card {
-        background-color: #1e1e1e;
+        background-color: #f8f9fa;
         padding: 1rem;
         border-radius: 0.5rem;
-        border: 1px solid #333;
+        border: 1px solid #e0e0e0;
     }
     .metric-value {
         font-size: 2rem;
         font-weight: bold;
+        color: #1f2937;
     }
     .metric-label {
-        color: #888;
+        color: #6b7280;
         font-size: 0.9rem;
     }
-    .positive { color: #00ff00; }
-    .negative { color: #ff4444; }
-    .neutral { color: #ffff00; }
+    .positive { color: #16a34a; }
+    .negative { color: #dc2626; }
+    .neutral { color: #ca8a04; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -90,6 +91,79 @@ def main():
         page_data_management(symbol)
 
 
+@st.cache_data(ttl=300)  # 缓存5分钟
+def fetch_underlying_price(symbol: str) -> dict:
+    """获取标的指数实时价格"""
+    import akshare as ak
+
+    underlying_map = {
+        "IO": ("000300", "沪深300"),
+        "MO": ("000852", "中证1000"),
+        "HO": ("000016", "上证50"),
+    }
+
+    code, name = underlying_map.get(symbol, ("000300", "沪深300"))
+
+    try:
+        # 获取最近的日线数据
+        df = ak.index_zh_a_hist(
+            symbol=code,
+            period="daily",
+            start_date=(datetime.now() - timedelta(days=30)).strftime("%Y%m%d"),
+            end_date=datetime.now().strftime("%Y%m%d")
+        )
+
+        if df is not None and not df.empty:
+            latest = df.iloc[-1]
+            prev = df.iloc[-2] if len(df) > 1 else df.iloc[-1]
+
+            close = float(latest['收盘'])
+            prev_close = float(prev['收盘'])
+            change = close - prev_close
+
+            # 计算20日历史波动率
+            if len(df) >= 20:
+                returns = np.log(df['收盘'].astype(float) / df['收盘'].astype(float).shift(1))
+                hv_20 = returns.tail(20).std() * np.sqrt(252)
+            else:
+                hv_20 = 0.18
+
+            return {
+                'price': close,
+                'change': change,
+                'change_pct': (change / prev_close) * 100 if prev_close else 0,
+                'hv_20': hv_20,
+                'success': True
+            }
+    except Exception as e:
+        st.warning(f"获取标的数据失败: {e}")
+
+    return {'price': 0, 'change': 0, 'change_pct': 0, 'hv_20': 0.18, 'success': False}
+
+
+@st.cache_data(ttl=60)  # 缓存1分钟
+def fetch_option_chain_data(symbol: str) -> pd.DataFrame:
+    """获取期权链实时数据"""
+    import akshare as ak
+
+    option_board_map = {
+        "IO": "沪深300股指期权",
+        "MO": "中证1000股指期权",
+        "HO": "上证50股指期权",
+    }
+
+    board_name = option_board_map.get(symbol, "沪深300股指期权")
+
+    try:
+        df = ak.option_finance_board(symbol=board_name)
+        if df is not None and not df.empty:
+            return df
+    except Exception as e:
+        st.warning(f"获取期权链失败: {e}")
+
+    return pd.DataFrame()
+
+
 def page_dashboard(symbol: str):
     """实时监控面板"""
     st.title("🏠 实时监控面板")
@@ -97,17 +171,50 @@ def page_dashboard(symbol: str):
     config = OPTION_INSTRUMENTS[symbol]
     st.markdown(f"**{config['name']}** | 合约乘数: {config['multiplier']} | 交易时间: {config['trading_hours']}")
 
-    # 模拟数据（实际应从数据源获取）
-    spot = 3900 + np.random.uniform(-50, 50)
-    current_iv = 0.18 + np.random.uniform(-0.02, 0.02)
-    iv_percentile = 35 + np.random.uniform(-10, 10)
-    hv_20 = current_iv * 0.95
+    # 获取真实数据
+    with st.spinner("正在获取实时数据..."):
+        underlying_data = fetch_underlying_price(symbol)
+        option_df = fetch_option_chain_data(symbol)
+
+    # 标的价格
+    spot = underlying_data['price'] if underlying_data['success'] else 3900.0
+    price_change = underlying_data['change'] if underlying_data['success'] else 0
+    hv_20 = underlying_data['hv_20'] if underlying_data['success'] else 0.18
+
+    # 计算ATM IV (从期权链数据估算)
+    if not option_df.empty and spot > 0:
+        try:
+            # 找到最接近ATM的期权
+            if '行权价' in option_df.columns:
+                option_df['strike_diff'] = abs(option_df['行权价'].astype(float) - spot)
+                atm_options = option_df.nsmallest(4, 'strike_diff')
+
+                # 估算IV (简化处理：使用期权价格反推)
+                if '最新价' in atm_options.columns:
+                    atm_prices = atm_options['最新价'].astype(float).mean()
+                    # 简单估算: IV ≈ 期权价格 / 标的价格 * 调整系数
+                    current_iv = min(max((atm_prices / spot) * 8, 0.10), 0.50)
+                else:
+                    current_iv = 0.18
+            else:
+                current_iv = 0.18
+        except:
+            current_iv = 0.18
+    else:
+        current_iv = 0.18
+
+    # IV百分位 (简化处理，实际应从历史数据计算)
+    # 假设当前IV在15%-35%范围内对应0-100百分位
+    iv_percentile = min(max((current_iv - 0.12) / 0.25 * 100, 0), 100)
 
     # 顶部指标卡片
     col1, col2, col3, col4, col5 = st.columns(5)
 
     with col1:
-        st.metric("标的现价", f"{spot:.2f}", f"{np.random.uniform(-20, 20):.2f}")
+        if underlying_data['success']:
+            st.metric("标的现价", f"{spot:.2f}", f"{price_change:+.2f}")
+        else:
+            st.metric("标的现价", "获取失败", "请检查网络")
 
     with col2:
         iv_color = "🟢" if iv_percentile < 30 else ("🔴" if iv_percentile > 70 else "🟡")
@@ -121,7 +228,7 @@ def page_dashboard(symbol: str):
         st.metric("HV(20)", f"{hv_20*100:.1f}%")
 
     with col5:
-        iv_hv_ratio = current_iv / hv_20
+        iv_hv_ratio = current_iv / hv_20 if hv_20 > 0 else 1.0
         st.metric("IV/HV", f"{iv_hv_ratio:.2f}",
                   "溢价" if iv_hv_ratio > 1 else "折价")
 
@@ -130,35 +237,34 @@ def page_dashboard(symbol: str):
     # 期权链展示
     st.subheader("📋 期权链 (T型报价)")
 
-    # 生成模拟期权链
-    strikes = [spot + i * 50 for i in range(-5, 6)]
-    T = 30 / 365
+    # 使用真实数据或模拟数据
+    if not option_df.empty:
+        # 显示真实期权链
+        display_cols = ['合约代码', '最新价', '涨跌幅', '成交量', '持仓量', '行权价'] if '合约代码' in option_df.columns else option_df.columns.tolist()
+        available_cols = [col for col in display_cols if col in option_df.columns]
+        st.dataframe(option_df[available_cols].head(20), use_container_width=True, hide_index=True)
+    else:
+        # 使用计算出的期权链
+        strikes = [spot + i * 50 for i in range(-5, 6)]
+        T = 30 / 365
 
-    chain_data = []
-    for strike in strikes:
-        call_bs = BlackScholes(spot, strike, T, 0.02, current_iv, 0.025, 'call')
-        put_bs = BlackScholes(spot, strike, T, 0.02, current_iv, 0.025, 'put')
+        chain_data = []
+        for strike in strikes:
+            call_bs = BlackScholes(spot, strike, T, 0.02, current_iv, 0.025, 'call')
+            put_bs = BlackScholes(spot, strike, T, 0.02, current_iv, 0.025, 'put')
 
-        chain_data.append({
-            'Call价格': f"{call_bs.price():.2f}",
-            'Call Delta': f"{call_bs.delta():.3f}",
-            'Call Theta': f"{call_bs.theta():.3f}",
-            '行权价': f"{strike:.0f}",
-            'Put Theta': f"{put_bs.theta():.3f}",
-            'Put Delta': f"{put_bs.delta():.3f}",
-            'Put价格': f"{put_bs.price():.2f}",
-        })
+            chain_data.append({
+                'Call价格': f"{call_bs.price():.2f}",
+                'Call Delta': f"{call_bs.delta():.3f}",
+                'Call Theta': f"{call_bs.theta():.3f}",
+                '行权价': f"{strike:.0f}",
+                'Put Theta': f"{put_bs.theta():.3f}",
+                'Put Delta': f"{put_bs.delta():.3f}",
+                'Put价格': f"{put_bs.price():.2f}",
+            })
 
-    chain_df = pd.DataFrame(chain_data)
-
-    # 高亮ATM行
-    atm_idx = len(strikes) // 2
-
-    st.dataframe(
-        chain_df,
-        use_container_width=True,
-        hide_index=True
-    )
+        chain_df = pd.DataFrame(chain_data)
+        st.dataframe(chain_df, use_container_width=True, hide_index=True)
 
     st.markdown("---")
 
@@ -168,6 +274,8 @@ def page_dashboard(symbol: str):
     with col1:
         st.subheader("Greeks分布")
 
+        strikes = [spot + i * 50 for i in range(-5, 6)]
+        T = 30 / 365
         greeks_data = calculate_greeks_batch(spot, strikes, T, 0.02, current_iv, 0.025)
 
         fig = go.Figure()
@@ -194,6 +302,16 @@ def page_dashboard(symbol: str):
 
         for s in suggestions:
             st.markdown(f"• {s}")
+
+    # 刷新按钮
+    st.markdown("---")
+    col1, col2, col3 = st.columns([1, 1, 2])
+    with col1:
+        if st.button("🔄 刷新数据"):
+            st.cache_data.clear()
+            st.rerun()
+    with col2:
+        st.caption(f"数据更新时间: {datetime.now().strftime('%H:%M:%S')}")
 
 
 def page_iv_analysis(symbol: str):

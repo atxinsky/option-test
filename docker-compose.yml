@@ -13,6 +13,8 @@ services:
       - ./data:/app/data
       # 配置文件
       - ./configs:/app/configs
+      # Streamlit配置
+      - ./.streamlit:/app/.streamlit
       # 策略文件（方便热更新）
       - ./strategies:/app/strategies
       # 主要代码文件（开发模式）

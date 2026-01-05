@@ -1,0 +1,38 @@
+name: option-quant
+
+services:
+  option-quant:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: option-quant
+    ports:
+      - "8503:8503"
+    volumes:
+      # 数据持久化
+      - ./data:/app/data
+      # 配置文件
+      - ./configs:/app/configs
+      # 策略文件（方便热更新）
+      - ./strategies:/app/strategies
+      # 主要代码文件（开发模式）
+      - ./app.py:/app/app.py
+      - ./engine.py:/app/engine.py
+      - ./greeks.py:/app/greeks.py
+      - ./iv_monitor.py:/app/iv_monitor.py
+      - ./data_manager.py:/app/data_manager.py
+      - ./config.py:/app/config.py
+    environment:
+      - TZ=Asia/Shanghai
+      - PYTHONUNBUFFERED=1
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8503/_stcore/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+networks:
+  default:
+    name: quant-network

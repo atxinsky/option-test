@@ -1,0 +1,36 @@
+# 默认策略配置
+
+name: default
+env: backtest
+market_type: option
+initial_capital: 1000000
+
+# 回测时间范围
+time_start: "20230101"
+time_end: "20251231"
+
+# 品种配置
+symbol: IO  # IO=沪深300, MO=中证1000, HO=上证50
+
+# 策略配置
+strategy:
+  name: bull_call_spread
+  params:
+    ema_fast: 9
+    ema_slow: 21
+    ma_len: 20
+    iv_percentile_max: 50
+    delta_buy: 0.50
+    delta_sell: 0.30
+    spread_width: 100
+    days_to_expiry_min: 20
+    days_to_expiry_max: 45
+    profit_target: 0.80
+    time_decay_stop: 0.50
+    days_before_expiry_close: 5
+
+# 风险管理
+risk:
+  max_position_pct: 0.3      # 最大持仓比例
+  max_loss_per_trade: 0.02   # 单笔最大亏损
+  max_daily_loss: 0.05       # 日最大亏损
